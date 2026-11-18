@@ -264,6 +264,38 @@ static shz_result fn_resize_locked(shz_ctx* ctx, const shz_value* args, uint32_t
 	return SHZ_OK;
 }
 
+/* lock_then_replace(list): locks the buffer list[0] for writing, replaces list[0] by 7 while it is locked, then writes
+   through the lock (#937: the lock keeps the buffer alive, not the list element); returns the sum of the bytes read back */
+static shz_result fn_lock_then_replace(shz_ctx* ctx, const shz_value* args, uint32_t argc, shz_value* out)
+{
+	shz_buffer_view view;
+	shz_value b, seven = shz_int(7);
+	size_t i;
+	int64_t sum = 0;
+	shz_result r;
+	(void)argc;
+	r = host->list_get(ctx, &args[0], 0, &b);
+	if (r != SHZ_OK)
+		return r;
+	memset(&view, 0, sizeof(view));
+	SHZ_INIT(view);
+	r = host->bytes_lock(ctx, &b, SHZ_LOCK_WRITE, &view);
+	if (r != SHZ_OK)
+		return r;
+	r = host->list_set(ctx, &args[0], 0, &seven);
+	if (r != SHZ_OK)
+	{
+		host->bytes_unlock(ctx, &view);
+		return r;
+	}
+	for (i = 0; i < view.size; i++)
+		view.data[i] = 1;
+	for (i = 0; i < view.size; i++)
+		sum += view.data[i];
+	*out = shz_int(sum);
+	return host->bytes_unlock(ctx, &view);
+}
+
 /* make_bytes(n): a new buffer with the bytes 0, 1, 2, ... */
 static shz_result fn_make_bytes(shz_ctx* ctx, const shz_value* args, uint32_t argc, shz_value* out)
 {
@@ -1017,6 +1049,9 @@ SHZ_PLUGIN_API shz_result shz_module_register(shz_module* self, const shz_host_a
 		buffer_param, 1, NULL);
 	r |= add_fn(self, reg, NS, "resize_locked", fn_resize_locked, 1, 1, "Test helper: 1 when resizing a locked buffer is refused.",
 		buffer_param, 1, NULL);
+	r |= add_fn(self, reg, NS, "lock_then_replace", fn_lock_then_replace, 1, 1,
+		"Test helper (#937): writes through a lock of list[0] after list[0] was replaced; returns the sum of the bytes.",
+		list_param, 1, NULL);
 	r |= add_fn(self, reg, NS, "make_bytes", fn_make_bytes, 1, 1, "A new buffer of n bytes 0, 1, 2, ...", size_param, 1, NULL);
 	r |= add_fn(self, reg, NS, "warn_nonfatal", fn_warn_nonfatal, 0, 0, "Reports a non-fatal error and returns 1.", NULL, 0, NULL);
 	r |= add_fn(self, reg, NS, "apply", fn_apply, 2, 2, "Starts fn(x); last_result() has its return value once it finished.",
